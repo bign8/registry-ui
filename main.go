@@ -5,17 +5,20 @@ import (
 	"flag"
 	"html/template"
 	"net/http"
+	"net/url"
+	"sort"
 	"time"
 )
 
 var (
 	addr = flag.String("addr", ":8080", "ui address")
-	api  = flag.String("api", "http://localhost:5000", "api address")
+	apis = flag.String("api", "http://localhost:5000", "api address")
 	tout = flag.Duration("tout", time.Second, "api cache timeout")
+	host string // host:port of api server
 )
 
 func main() {
-	flag.Parse()
+	parseArgs()
 	println("Serving on " + *addr)
 	http.ListenAndServe(*addr, &memory{
 		tout: time.Now().Add(-*tout),
@@ -27,21 +30,27 @@ func main() {
 
 var htmlTPL = template.Must(template.New("").Parse(`<!DOCTYPE html>
 <html lang="en" dir="ltr">
-  <head>
-    <meta charset="utf-8">
-    <title>Registry Listing</title>
-  </head>
-  <body>
-		{{range $name, $tags := . -}}
-			<h2>{{$name}}</h2>
-			<ul>
-				{{range $tags -}}
-					<li>{{.}}</li>
-				{{end}}
-			</ul>
-		{{else}}<p>No Repositories Found</p>{{end}}
-  </body>
+	<head>
+		<meta charset="utf-8">
+		<title>Registry Listing</title>
+	</head>
+	<body>
+		<ul>
+		{{- range .}}
+			<li>{{.}}</li>
+		{{- else}}<li>No Repositories Found</li>{{end}}
+		</ul>
+	</body>
 </html>`))
+
+func parseArgs() {
+	flag.Parse()
+	api, err := url.Parse(*apis)
+	if err != nil {
+		panic(err)
+	}
+	host = api.Host
+}
 
 type memory struct {
 	data http.HandlerFunc
@@ -49,7 +58,7 @@ type memory struct {
 }
 
 func (mem *memory) update() error {
-	res, err := http.Get(*api + "/v2/_catalog")
+	res, err := http.Get(*apis + "/v2/_catalog")
 	if err != nil {
 		return err
 	}
@@ -67,7 +76,7 @@ func (mem *memory) update() error {
 	data := make(map[string][]string, len(catalog.Repos))
 
 	for _, name := range catalog.Repos {
-		res, err := http.Get(*api + "/v2/" + name + "/tags/list")
+		res, err := http.Get(*apis + "/v2/" + name + "/tags/list")
 		if err != nil {
 			return err
 		}
@@ -85,8 +94,16 @@ func (mem *memory) update() error {
 		}
 	}
 
+	data2 := make([]string, 0, len(catalog.Repos))
+	for repo, tags := range data {
+		for _, tag := range tags {
+			data2 = append(data2, host+"/"+repo+":"+tag)
+		}
+	}
+	sort.Strings(data2)
+
 	mem.data = func(w http.ResponseWriter, r *http.Request) {
-		if err := htmlTPL.Execute(w, data); err != nil {
+		if err := htmlTPL.Execute(w, data2); err != nil {
 			println("causing failure " + err.Error())
 		}
 	}
